@@ -15,7 +15,213 @@ from collections import OrderedDict
 from models.hdr2E_flow_model import hdr2E_flow_model
 np.random.seed(0)
 
-class hdr2E_flow2s_model(hdr2E_flow_model):
+
+class PreprocessMixin:
+
+    def prepare_inputs(self, data):
+        hdr2E_flow_model.prepare_inputs(self, data)
+        
+        # for Stage 2
+        expms2 = []
+        ldrs = data['ldrs']
+        expos = data['expos']
+
+        for i in range(len(ldrs)):
+            neighb_idx = 1 if i == 0 else i - 1
+            cur_h_idx = (expos[i] > expos[neighb_idx]).view(-1).long()
+            # two = torch.cat([ldrs[neighb_idx], ldrs[i]], dim=0)
+            expm2 = self.get_expos2_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr'])
+            expms2.append(expm2)
+
+        stage1_out_mask = []
+        for i in range(1, len(ldrs)-1):
+            if self.nexps == 2:
+                cur_h_idx = (expos[i] > expos[i-1]).view(-1).long()
+                two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
+                mask = 1.0 - self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=0.4)
+                stage1_out_mask.append(mask)
+
+        data.update({'expms2': expms2, 'stage1_out_mask': stage1_out_mask})
+
+    def get_expos2_mask_method(self):
+        get_expos_mask_method = mutils.pt_get_in_exposure_mask
+        return get_expos_mask_method
+    
+    def get_high_expo_idxs(self, expos, frame_idx):
+        i = frame_idx
+        if i == 0:
+            h_idx = (expos[i] > expos[i+1]).view(-1)
+        else: # 0 < i < len(expos)-1
+            h_idx = (expos[i] > expos[i-1]).view(-1)
+        return h_idx
+    
+    def prepare_inputs_direct2(self, data, pred, idxs):
+        # Problematic: data and pred does not share the same index
+        hdr_mid, ldr_mid = self.hdr_mid, self.ldr_mid
+        pi, ci, ni = idxs
+        merge_input = {}
+        pred_p_hdr, pred_c_hdr, pred_n_hdr = pred[pi]['hdr'], pred[ci]['hdr'], pred[ni]['hdr']
+
+        if self.opt['s2_inldr']:
+            pred_p_ldr = mutils.pt_hdr_to_ldr_clamp(pred[pi]['hdr'].detach(),expo=data['expos'][ldr_mid-1])
+            pred_c_ldr = mutils.pt_hdr_to_ldr_clamp(pred[ci]['hdr'].detach(),expo=data['expos'][ldr_mid])
+            pred_n_ldr = mutils.pt_hdr_to_ldr_clamp(pred[ni]['hdr'].detach(),expo=data['expos'][ldr_mid+1])
+            merge_input.update({'cur': pred_c_ldr, 'prev': pred_p_ldr, 'nxt': pred_n_ldr})
+
+        if self.opt['s2_inexpm']:
+            p_expm, c_expm, n_expm = data['expms2'][ldr_mid-1], data['expms2'][ldr_mid], data['expms2'][ldr_mid+1],
+            merge_input.update({'p_expm': p_expm, 'c_expm': c_expm, 'n_expm': n_expm})
+
+        inputs = []
+        if self.opt['s2_inldr']:
+            inputs.append(torch.cat([pred_p_ldr, pred_p_hdr], 1))
+            inputs.append(torch.cat([pred_c_ldr, pred_c_hdr], 1))
+            inputs.append(torch.cat([pred_n_ldr, pred_n_hdr], 1))
+        elif self.opt['s2_inexpm']:
+            inputs.append(torch.cat([p_expm, pred_p_hdr], 1))
+            inputs.append(torch.cat([c_expm, pred_c_hdr], 1))
+            inputs.append(torch.cat([n_expm, pred_n_hdr], 1))
+        else:
+            inputs = [pred_p_hdr, pred_c_hdr, pred_n_hdr]
+
+        inputs = torch.stack(inputs, 1)
+
+        merge_input.update({'x': inputs})
+        merge_input.update({'cur_hdr': pred_c_hdr, 'prev_hdr': pred_p_hdr, 'nxt_hdr': pred_n_hdr})
+        merge_input.update({'p_e': data['expos'][self.ldr_mid-1], 'c_e': data['expos'][self.ldr_mid], 'n_e': data['expos'][self.ldr_mid+1]})
+
+        if 'gt_ref_ws' in data:
+            merge_input.update({'gt_ref_w': data['gt_ref_ws'][self.hdr_mid]})
+        return merge_input
+    
+    def prepare_aligned_mnet2_inputs(self, data, pred, s1_align_ldrs, idxs):
+        pred_p_to_c = nutils.affine_warp(pred[0]['hdr'], data['matches'][self.ldr_mid-1][:,1].view(-1,2,3))
+        pred_n_to_c = nutils.affine_warp(pred[2]['hdr'], data['matches'][self.ldr_mid+1][:,0].view(-1,2,3))
+
+        self.aligned_data2 = [eutils.pt_mulog_transform(pred_p_to_c), eutils.pt_mulog_transform(pred_n_to_c)]
+
+        new_pred = [{'hdr': pred_p_to_c}, {'hdr': pred[1]['hdr']}, {'hdr': pred_n_to_c}]
+        new_data = {}
+        
+        ldrs = [None, s1_align_ldrs[0], None, s1_align_ldrs[1], None]
+
+        """ 
+        This part is slightly different from the paper.
+        The released stage 2 model takes expms2 as input. However, the expms2 can be removed
+        when training a new model. The result should be similar
+        """  
+        new_data['expms2'] = [None]
+        cur_h_idx = self.get_high_expo_idxs(data['expos'], self.ldr_mid-1)
+        new_data['expms2'].append(self.get_expos2_mask_method()(ldrs[1], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
+
+        new_data['expms2'].append(data['expms2'][self.ldr_mid]) # Okay
+
+        cur_h_idx = self.get_high_expo_idxs(data['expos'], self.ldr_mid+1)
+        new_data['expms2'].append(self.get_expos2_mask_method()(ldrs[3], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
+
+        new_data['expos'] = data['expos']
+        new_data['gt_ref_ws'] = data['gt_ref_ws']
+
+        return self.prepare_inputs_direct2(new_data, new_pred, idxs=[0,1,2])
+    
+
+class EvalMixin:
+
+    def prepare_records(self):
+        data = self.data
+        records, iter_res = OrderedDict(), []
+
+        # stage2
+        gt = {
+            'hdr': data['hdrs'][self.hdr_mid], 
+            'log_hdr': data['log_hdrs'][self.hdr_mid], 
+            'c_expo': data['expos'][self.ldr_mid], 
+            'p_expo': data['expos'][self.ldr_mid-1]
+        }
+        pred = {
+            'hdr': self.pred2['hdr'], 
+            'log_hdr': self.pred2['log_hdr']
+        }
+
+        records_sub, iter_res_sub = self._prepare_records(gt, pred)
+        records.update(records_sub)
+        iter_res += iter_res_sub
+
+        # stage 1
+        for i in range(self.hdr_mid, self.hdr_mid+1):
+            gt = {'hdr': data['hdrs'][i], 'log_hdr': data['log_hdrs'][i], 'c_expo': data['expos'][i+1], 'p_expo': data['expos'][i]}
+            pred = {'hdr': self.preds[i]['hdr'], 'log_hdr': self.preds[i]['log_hdr']}
+            records_sub, iter_res_sub = self._prepare_records(gt, pred, key='%d'%(i+1))
+            records.update(records_sub)
+            iter_res += iter_res_sub
+
+        if hasattr(self, 'fpreds'):
+            self.prepare_flow_info(records, flow=self.fpreds[1]['flow1'])
+        return records, iter_res
+
+    def prepare_visual(self):
+        data, preds = self.data, self.preds
+        pred2 = self.pred2
+
+        visuals = []
+        visuals += [data['log_hdrs'][self.hdr_mid], pred2['log_hdr'], preds[self.hdr_mid]['log_hdr']]
+        diff = eutils.pt_cal_diff_map(pred2['log_hdr'].detach(), data['log_hdrs'][self.hdr_mid])
+        visuals.append(eutils.pt_colormap(diff))
+        diff = eutils.pt_cal_diff_map(preds[self.hdr_mid]['log_hdr'].detach(), data['log_hdrs'][self.hdr_mid])
+        visuals.append(eutils.pt_colormap(diff))
+
+        for i, pred in enumerate(preds):
+            if i != self.hdr_mid:
+                visuals += [pred['log_hdr']]
+
+        if self.opt['mask_o']:
+            visuals += [self.data['gt_ref_ws'][self.hdr_mid]]
+
+        if self.opt['s2_inexpm'] and 'expms2' in data:
+            for i in range(self.ldr_mid-1, self.ldr_mid+2):
+                visuals += [data['expms2'][i]]
+
+        for i, ldr in enumerate(data['ldrs']):
+            visuals += [ldr]
+        for i, ldr_adj in enumerate(data['ldr_adjs']):
+            visuals += [ldr_adj]
+
+        visuals.append(eutils.pt_blend_images(data['ldrs']))
+
+        if hasattr(self, 'fpreds') and 'flow1' in self.fpreds[self.hdr_mid]:
+            flow1_color = eutils.pt_flow_to_color(self.fpreds[self.hdr_mid]['flow1'].detach())
+            flow2_color = eutils.pt_flow_to_color(self.fpreds[self.hdr_mid]['flow2'].detach())
+            visuals += [flow1_color, flow2_color]
+
+        for key in ['attention1', 'attention2', 'attention3']:
+            if key in pred2:
+                atts = pred2[key]
+                if atts.dim() == 3: 
+                    atts = eutils.pt_colormap(atts, thres=1)
+                visuals.append(atts)
+
+        if 'weights' in pred2:
+            visuals += pred2['weights']
+
+        if self.split not in ['train', 'val'] and self.opt['origin_hw']:
+            new_visuals = eutils.crop_list_of_tensors(visuals, data['hw'])
+            return new_visuals
+        return visuals
+    
+    def save_visual_details(self, log, split, epoch, i):
+        save_dir = log.config_save_detail_dir(split, epoch)
+        data, pred = self.data, self.pred2
+        hdr = pred['hdr']
+        if self.opt['origin_hw']: 
+            h, w = data['hw']
+            hdr = eutils.crop_tensor(hdr, h, w)
+        hdr_numpy = hdr[0].cpu().numpy().transpose(1, 2, 0)
+        hdr_name = os.path.join(save_dir, '%04d_%s_%s.hdr' % (i, data['scene'][0], data['img_name'][0]))
+        iutils.save_hdr(hdr_name, hdr_numpy)
+
+
+
+class hdr2E_flow2s_model(PreprocessMixin, EvalMixin, hdr2E_flow_model):
     @staticmethod
     def modify_commandline_options(parser, is_train=True):
         parser.add_argument('--fnet_name', default='spynet_triple') # for 2 exposures
@@ -215,74 +421,6 @@ class hdr2E_flow2s_model(hdr2E_flow_model):
         mu = 5000 if self.split not in ['train', 'val'] else self.mu
         self.pred2['log_hdr'] = eutils.pt_mulog_transform(self.pred2['hdr'].clamp(0, 1), mu)
 
-    def prepare_inputs(self, data):
-        hdr2E_flow_model.prepare_inputs(self, data)
-        
-        # for Stage 2
-        expms2 = []
-        ldrs = data['ldrs']
-        expos = data['expos']
-
-        for i in range(len(ldrs)):
-            neighb_idx = 1 if i == 0 else i - 1
-            cur_h_idx = (expos[i] > expos[neighb_idx]).view(-1).long()
-            # two = torch.cat([ldrs[neighb_idx], ldrs[i]], dim=0)
-            expm2 = self.get_expos2_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr'])
-            expms2.append(expm2)
-
-        stage1_out_mask = []
-        for i in range(1, len(ldrs)-1):
-            if self.nexps == 2:
-                cur_h_idx = (expos[i] > expos[i-1]).view(-1).long()
-                two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
-                mask = 1.0 - self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=0.4)
-                stage1_out_mask.append(mask)
-
-        data.update({'expms2': expms2, 'stage1_out_mask': stage1_out_mask})
-
-    def get_expos2_mask_method(self):
-        get_expos_mask_method = mutils.pt_get_in_exposure_mask
-        return get_expos_mask_method
-    
-    def prepare_inputs_direct2(self, data, pred, idxs):
-        # Problematic: data and pred does not share the same index
-        hdr_mid, ldr_mid = self.hdr_mid, self.ldr_mid
-        pi, ci, ni = idxs
-        merge_input = {}
-        pred_p_hdr, pred_c_hdr, pred_n_hdr = pred[pi]['hdr'], pred[ci]['hdr'], pred[ni]['hdr']
-
-        if self.opt['s2_inldr']:
-            pred_p_ldr = mutils.pt_hdr_to_ldr_clamp(pred[pi]['hdr'].detach(),expo=data['expos'][ldr_mid-1])
-            pred_c_ldr = mutils.pt_hdr_to_ldr_clamp(pred[ci]['hdr'].detach(),expo=data['expos'][ldr_mid])
-            pred_n_ldr = mutils.pt_hdr_to_ldr_clamp(pred[ni]['hdr'].detach(),expo=data['expos'][ldr_mid+1])
-            merge_input.update({'cur': pred_c_ldr, 'prev': pred_p_ldr, 'nxt': pred_n_ldr})
-
-        if self.opt['s2_inexpm']:
-            p_expm, c_expm, n_expm = data['expms2'][ldr_mid-1], data['expms2'][ldr_mid], data['expms2'][ldr_mid+1],
-            merge_input.update({'p_expm': p_expm, 'c_expm': c_expm, 'n_expm': n_expm})
-
-        inputs = []
-        if self.opt['s2_inldr']:
-            inputs.append(torch.cat([pred_p_ldr, pred_p_hdr], 1))
-            inputs.append(torch.cat([pred_c_ldr, pred_c_hdr], 1))
-            inputs.append(torch.cat([pred_n_ldr, pred_n_hdr], 1))
-        elif self.opt['s2_inexpm']:
-            inputs.append(torch.cat([p_expm, pred_p_hdr], 1))
-            inputs.append(torch.cat([c_expm, pred_c_hdr], 1))
-            inputs.append(torch.cat([n_expm, pred_n_hdr], 1))
-        else:
-            inputs = [pred_p_hdr, pred_c_hdr, pred_n_hdr]
-
-        inputs = torch.stack(inputs, 1)
-
-        merge_input.update({'x': inputs})
-        merge_input.update({'cur_hdr': pred_c_hdr, 'prev_hdr': pred_p_hdr, 'nxt_hdr': pred_n_hdr})
-        merge_input.update({'p_e': data['expos'][self.ldr_mid-1], 'c_e': data['expos'][self.ldr_mid], 'n_e': data['expos'][self.ldr_mid+1]})
-
-        if 'gt_ref_ws' in data:
-            merge_input.update({'gt_ref_w': data['gt_ref_ws'][self.hdr_mid]})
-        return merge_input
-
     def compute_log_hdr_loss(self, pred_log_hdr, gt_log_hdr, weight=1, vgg=True):
         # Attention: Only for middle hdr
         loss = 0
@@ -335,98 +473,6 @@ class hdr2E_flow2s_model(hdr2E_flow_model):
         self.optimizer.zero_grad()
         self.loss.backward()
         self.optimizer.step()
-   
-    def prepare_records(self):
-        data = self.data
-        records, iter_res = OrderedDict(), []
-
-        # stage2
-        gt = {
-            'hdr': data['hdrs'][self.hdr_mid], 
-            'log_hdr': data['log_hdrs'][self.hdr_mid], 
-            'c_expo': data['expos'][self.ldr_mid], 
-            'p_expo': data['expos'][self.ldr_mid-1]
-        }
-        pred = {
-            'hdr': self.pred2['hdr'], 
-            'log_hdr': self.pred2['log_hdr']
-        }
-
-        records_sub, iter_res_sub = self._prepare_records(gt, pred)
-        records.update(records_sub)
-        iter_res += iter_res_sub
-
-        # stage 1
-        for i in range(self.hdr_mid, self.hdr_mid+1):
-            gt = {'hdr': data['hdrs'][i], 'log_hdr': data['log_hdrs'][i], 'c_expo': data['expos'][i+1], 'p_expo': data['expos'][i]}
-            pred = {'hdr': self.preds[i]['hdr'], 'log_hdr': self.preds[i]['log_hdr']}
-            records_sub, iter_res_sub = self._prepare_records(gt, pred, key='%d'%(i+1))
-            records.update(records_sub)
-            iter_res += iter_res_sub
-
-        if hasattr(self, 'fpreds'):
-            self.prepare_flow_info(records, flow=self.fpreds[1]['flow1'])
-        return records, iter_res
-
-    def prepare_visual(self):
-        data, preds = self.data, self.preds
-        pred2 = self.pred2
-
-        visuals = []
-        visuals += [data['log_hdrs'][self.hdr_mid], pred2['log_hdr'], preds[self.hdr_mid]['log_hdr']]
-        diff = eutils.pt_cal_diff_map(pred2['log_hdr'].detach(), data['log_hdrs'][self.hdr_mid])
-        visuals.append(eutils.pt_colormap(diff))
-        diff = eutils.pt_cal_diff_map(preds[self.hdr_mid]['log_hdr'].detach(), data['log_hdrs'][self.hdr_mid])
-        visuals.append(eutils.pt_colormap(diff))
-
-        for i, pred in enumerate(preds):
-            if i != self.hdr_mid:
-                visuals += [pred['log_hdr']]
-
-        if self.opt['mask_o']:
-            visuals += [self.data['gt_ref_ws'][self.hdr_mid]]
-
-        if self.opt['s2_inexpm'] and 'expms2' in data:
-            for i in range(self.ldr_mid-1, self.ldr_mid+2):
-                visuals += [data['expms2'][i]]
-
-        for i, ldr in enumerate(data['ldrs']):
-            visuals += [ldr]
-        for i, ldr_adj in enumerate(data['ldr_adjs']):
-            visuals += [ldr_adj]
-
-        visuals.append(eutils.pt_blend_images(data['ldrs']))
-
-        if hasattr(self, 'fpreds') and 'flow1' in self.fpreds[self.hdr_mid]:
-            flow1_color = eutils.pt_flow_to_color(self.fpreds[self.hdr_mid]['flow1'].detach())
-            flow2_color = eutils.pt_flow_to_color(self.fpreds[self.hdr_mid]['flow2'].detach())
-            visuals += [flow1_color, flow2_color]
-
-        for key in ['attention1', 'attention2', 'attention3']:
-            if key in pred2:
-                atts = pred2[key]
-                if atts.dim() == 3: 
-                    atts = eutils.pt_colormap(atts, thres=1)
-                visuals.append(atts)
-
-        if 'weights' in pred2:
-            visuals += pred2['weights']
-
-        if self.split not in ['train', 'val'] and self.opt['origin_hw']:
-            new_visuals = eutils.crop_list_of_tensors(visuals, data['hw'])
-            return new_visuals
-        return visuals
-
-    def save_visual_details(self, log, split, epoch, i):
-        save_dir = log.config_save_detail_dir(split, epoch)
-        data, pred = self.data, self.pred2
-        hdr = pred['hdr']
-        if self.opt['origin_hw']: 
-            h, w = data['hw']
-            hdr = eutils.crop_tensor(hdr, h, w)
-        hdr_numpy = hdr[0].cpu().numpy().transpose(1, 2, 0)
-        hdr_name = os.path.join(save_dir, '%04d_%s_%s.hdr' % (i, data['scene'][0], data['img_name'][0]))
-        iutils.save_hdr(hdr_name, hdr_numpy)
 
     def prepare_predict(self):
         prediction = [self.pred2['log_hdr'].detach().cpu(), self.preds[self.hdr_mid]['log_hdr'].detach().cpu()]
@@ -453,40 +499,3 @@ class hdr2E_flow2s_model(hdr2E_flow_model):
 
         return self.prepare_mnet_inputs(self.opt, new_data, fpred, idxs=[0, 1, 2]) # reuse idx
 
-    def get_high_expo_idxs(self, expos, frame_idx):
-        i = frame_idx
-        if i == 0:
-            h_idx = (expos[i] > expos[i+1]).view(-1)
-        else: # 0 < i < len(expos)-1
-            h_idx = (expos[i] > expos[i-1]).view(-1)
-        return h_idx
-
-    def prepare_aligned_mnet2_inputs(self, data, pred, s1_align_ldrs, idxs):
-        pred_p_to_c = nutils.affine_warp(pred[0]['hdr'], data['matches'][self.ldr_mid-1][:,1].view(-1,2,3))
-        pred_n_to_c = nutils.affine_warp(pred[2]['hdr'], data['matches'][self.ldr_mid+1][:,0].view(-1,2,3))
-
-        self.aligned_data2 = [eutils.pt_mulog_transform(pred_p_to_c), eutils.pt_mulog_transform(pred_n_to_c)]
-
-        new_pred = [{'hdr': pred_p_to_c}, {'hdr': pred[1]['hdr']}, {'hdr': pred_n_to_c}]
-        new_data = {}
-        
-        ldrs = [None, s1_align_ldrs[0], None, s1_align_ldrs[1], None]
-
-        """ 
-        This part is slightly different from the paper.
-        The released stage 2 model takes expms2 as input. However, the expms2 can be removed
-        when training a new model. The result should be similar
-        """  
-        new_data['expms2'] = [None]
-        cur_h_idx = self.get_high_expo_idxs(data['expos'], self.ldr_mid-1)
-        new_data['expms2'].append(self.get_expos2_mask_method()(ldrs[1], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
-
-        new_data['expms2'].append(data['expms2'][self.ldr_mid]) # Okay
-
-        cur_h_idx = self.get_high_expo_idxs(data['expos'], self.ldr_mid+1)
-        new_data['expms2'].append(self.get_expos2_mask_method()(ldrs[3], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
-
-        new_data['expos'] = data['expos']
-        new_data['gt_ref_ws'] = data['gt_ref_ws']
-
-        return self.prepare_inputs_direct2(new_data, new_pred, idxs=[0,1,2])
