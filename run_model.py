@@ -16,5 +16,7 @@ def main(args):
     log.plot_curves(recorder, 'test')
 
 if __name__ == '__main__':
-    torch.manual_seed(args.seed)
-    main(args)
+    from loguru import logger
+    with logger.catch(reraise=True):
+        torch.manual_seed(args.seed)
+        main(args)

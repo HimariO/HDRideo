@@ -85,28 +85,39 @@ def pt_get_out_blend_mask(ldr, h_idx, l_idx=None, m_idx=None, h_thr=0.9, l_thr=0
     return exp_mask
 
 def pt_get_in_exposure_mask(ldr, h_idx, l_idx=None, m_idx=None, h_thr=0.9, l_thr=0.3):
+    """
+    h_idx: high exposure ldr image index?
+    m_idx: med exposure ldr image index?
+    l_idx: low exposure ldr image index?
+    """
     exp_mask = torch.zeros(ldr.shape, device=ldr.device)
     if h_idx.sum() > 0:
-        exp_mask[h_idx] = (ldr[h_idx] > h_thr).float()
+        exp_mask[0] = (ldr[0] > h_thr).float()
 
     if l_idx is None:
         l_idx = 1 - h_idx
     if l_idx.sum() > 0:
-        exp_mask[l_idx] = (ldr[l_idx] < l_thr).float()
+        exp_mask[0] = (ldr[0] < l_thr).float()
 
     if m_idx is not None and m_idx.sum() > 0:
-        exp_mask[m_idx] = ((ldr[m_idx] > h_thr) | (ldr[m_idx] < l_thr)).float()
-    return exp_mask
+        exp_mask[0] = ((ldr[0] > h_thr) | (ldr[0] < l_thr)).float()
+    return exp_mask[:1]
 
 # Hard output mask
 def pt_ldr_to_1c_mask(ldr, h_idx, h_thr=0.85, l_thr=0.35):
+    """
+    h_idx: high exposure ldr image index?
+    """
     n, c, h, w = ldr.shape
     exp_mask = torch.zeros((n, 1, h, w), device=ldr.device)
+
+    # tensor[True] == tensor[:] in older version of pytorch
     if h_idx.sum() > 0:
-        exp_mask[h_idx], _ = (ldr[h_idx] > h_thr).float().max(1, keepdim=True)
+        exp_mask[0], _ = (ldr[0:1] > h_thr).float().max(1, keepdim=True)
     if (1 - h_idx).sum() > 0:
-        exp_mask[1-h_idx], _ = (ldr[1-h_idx] < l_thr).float().min(1, keepdim=True)
-    return exp_mask
+        inv = (1 - h_idx) % n
+        exp_mask[0], _ = (ldr[0:1] < l_thr).float().min(1, keepdim=True)
+    return exp_mask[0: 1]
 
 def pt_ldr_to_3exps_1c_mask(ldr, h_idx, m_idx, l_idx, h_thr=0.85, l_thr=0.35):
     n, c, h, w = ldr.shape

@@ -170,6 +170,7 @@ class hdr2E_flow2s_model(hdr2E_flow_model):
             mpred['log_hdr'] = eutils.pt_mulog_transform(mpred['hdr'], mu)
             self.fpreds.append(fpred)
             self.preds.append(mpred)
+        
         self.forward_stage2()
 
     def forward_train(self):
@@ -224,15 +225,18 @@ class hdr2E_flow2s_model(hdr2E_flow_model):
 
         for i in range(len(ldrs)):
             neighb_idx = 1 if i == 0 else i - 1
-            cur_h_idx = (expos[i] > expos[neighb_idx]).view(-1)
+            cur_h_idx = (expos[i] > expos[neighb_idx]).view(-1).long()
+            # two = torch.cat([ldrs[neighb_idx], ldrs[i]], dim=0)
             expm2 = self.get_expos2_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr'])
             expms2.append(expm2)
 
         stage1_out_mask = []
         for i in range(1, len(ldrs)-1):
             if self.nexps == 2:
-                cur_h_idx = (expos[i] > expos[i-1]).view(-1)
-                stage1_out_mask.append(1.0 - self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=0.4))
+                cur_h_idx = (expos[i] > expos[i-1]).view(-1).long()
+                two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
+                mask = 1.0 - self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=0.4)
+                stage1_out_mask.append(mask)
 
         data.update({'expms2': expms2, 'stage1_out_mask': stage1_out_mask})
 
@@ -337,9 +341,16 @@ class hdr2E_flow2s_model(hdr2E_flow_model):
         records, iter_res = OrderedDict(), []
 
         # stage2
-        gt = {'hdr': data['hdrs'][self.hdr_mid], 'log_hdr': data['log_hdrs'][self.hdr_mid], 
-              'c_expo': data['expos'][self.ldr_mid], 'p_expo': data['expos'][self.ldr_mid-1]}
-        pred = {'hdr': self.pred2['hdr'], 'log_hdr': self.pred2['log_hdr']}
+        gt = {
+            'hdr': data['hdrs'][self.hdr_mid], 
+            'log_hdr': data['log_hdrs'][self.hdr_mid], 
+            'c_expo': data['expos'][self.ldr_mid], 
+            'p_expo': data['expos'][self.ldr_mid-1]
+        }
+        pred = {
+            'hdr': self.pred2['hdr'], 
+            'log_hdr': self.pred2['log_hdr']
+        }
 
         records_sub, iter_res_sub = self._prepare_records(gt, pred)
         records.update(records_sub)

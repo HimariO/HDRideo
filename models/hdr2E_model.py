@@ -118,8 +118,10 @@ class hdr2E_model(BaseModel):
         gt_ref_ws = []
         for i in range(1, len(ldrs)-1):
             if self.nexps == 2:
-                cur_h_idx = (expos[i] > expos[i-1]).view(-1)
-                gt_ref_ws.append(1.0 - self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr']))
+                cur_h_idx = (expos[i] > expos[i-1]).view(-1).long()
+                two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
+                mask = self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr'])
+                gt_ref_ws.append(1.0 - mask)
         
         tone_aug = self.opt['tone_low'] + self.opt['tone_ref']
         assert tone_aug <= 1
@@ -193,12 +195,12 @@ class hdr2E_model(BaseModel):
         expos = data['expos'].view(-1, self.nframes, 1, 1).split(1, 1)
         data['expos'] = expos
 
-        cur_h_idx = (expos[hdr_idx] > expos[hdr_idx-1]).view(-1)
+        cur_h_idx = (expos[hdr_idx] > expos[hdr_idx-1]).view(-1).long()
         data['gt_ref_ws'].append(1.0 - self.get_out_mask_method()(data['ldrs'][hdr_idx], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr']))
 
         data['l2hdrs'].append(mutils.pt_ldr_to_hdr(ldr, expos[ldr_idx]))
 
-        cur_h_idx = (expos[ldr_idx] > expos[ldr_idx-1]).view(-1)
+        cur_h_idx = (expos[ldr_idx] > expos[ldr_idx-1]).view(-1).long()
 
         data['ldr_adjs'].append(mutils.pt_ldr_to_ldr(ldr, expos[ldr_idx], expos[ldr_idx-1]))
 
@@ -276,8 +278,16 @@ class hdr2E_model(BaseModel):
         iter_res = []
 
         i = self.hdr_mid
-        gt = {'hdr': data['hdrs'][i], 'log_hdr': data['log_hdrs'][i], 'c_expo': data['expos'][i+1], 'p_expo': data['expos'][i]}
-        pred = {'hdr': self.pred['hdr'], 'log_hdr': self.pred['log_hdr']}
+        gt = {
+            'hdr': data['hdrs'][i],
+            'log_hdr': data['log_hdrs'][i],
+            'c_expo': data['expos'][i+1],
+            'p_expo': data['expos'][i]
+        }
+        pred = { 
+            'hdr': self.pred['hdr'],
+            'log_hdr': self.pred['log_hdr']
+        }
         records, iter_res = self._prepare_records(gt, pred)
 
         return records, iter_res
@@ -297,12 +307,14 @@ class hdr2E_model(BaseModel):
             records['hdr%s_lsnr' % key] = hdr_psnr_l.mean().item()
 
         l_idx = data['c_expo'].view(-1) < data['p_expo'].view(-1)
+        l_idx = l_idx.long()
         h_idx = 1 - l_idx
 
         for exp_type, idx in zip(['low', 'high'], [l_idx, h_idx]):
+            idx = idx % len(hdr_psnr)
             psnr = hdr_psnr[idx]
             if len(psnr) > 0:
-                records['%s%s_psnr' % (exp_type, key)] = psnr.mean().item() 
+                records['%s%s_psnr' % (exp_type, key)] = psnr.mean().item()
                 iter_res.append(records['%s%s_psnr' % (exp_type, key)])
 		
                 psnr_l = hdr_psnr_l[idx]

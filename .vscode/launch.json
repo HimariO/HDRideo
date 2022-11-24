@@ -1,0 +1,38 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "test dynamic gt 2-exposure",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run_model.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--gpu_ids", "0",
+                "--model", "hdr2E_flow2s_model",
+                "--benchmark", "real_benchmark_dataset",
+                "--bm_dir", "data/dynamic_RGB_data_2exp_release",
+                "--test_scene", "all",
+                "--mnet_name", "weight_net",
+                "--fnet_checkp", "data/models/CoarseToFine_2Exp/flow_net.pth",
+                "--mnet_checkp", "data/models/CoarseToFine_2Exp/weight_net.pth",
+                "--mnet2_checkp", "data/models/CoarseToFine_2Exp/refine_net.pth",
+            ],
+            "env": {
+                "CUDA_LAUNCH_BLOCKING": "1"
+            }
+        },
+    ]
+}
