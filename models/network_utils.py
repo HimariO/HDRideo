@@ -206,15 +206,17 @@ def backward_warp(img, flow, grid, pad='zeros'):
     n, c, h, w = img.shape
     flow = torch.cat([flow[:, 0:1, :, :] / ((w - 1.0) / 2.0), flow[:, 1:2, :, :] / ((h - 1.0) / 2.0)], 1) # [-2, 2]
     accum_flow = grid + flow # [-1, 1]
-    warped_img = torch.nn.functional.grid_sample(input=img, grid=accum_flow.permute(0, 2, 3, 1), mode='bilinear',  padding_mode='zeros') 
+    warped_img = torch.nn.functional.grid_sample(
+        input=img, grid=accum_flow.permute(0, 2, 3, 1), 
+        mode='bilinear',  padding_mode='zeros', align_corners=True) 
     return warped_img
 
 def affine_warp(img, theta): # warp img1 to img2
     n, c, h, w = img.shape
-    affine_grid = F.affine_grid(theta, img.shape)
+    affine_grid = F.affine_grid(theta, img.shape, align_corners=True)
     invalid_mask = ((affine_grid.narrow(3, 0, 1).abs() > 1) + (affine_grid.narrow(3, 1, 1).abs() > 1)) >= 1
     invalid_mask = invalid_mask.view(n, 1, h, w).float()
-    img1_to_img2 = F.grid_sample(img, affine_grid)
+    img1_to_img2 = F.grid_sample(img, affine_grid, align_corners=True)
     img1_to_img2 = img * invalid_mask + img1_to_img2 * (1 - invalid_mask)
 
     #import torchvision.utils as vutils

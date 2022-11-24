@@ -18,7 +18,7 @@ np.random.seed(0)
 
 class PreprocessMixin:
 
-    def prepare_inputs(self, data):
+    def prepare_inputs(self: hdr2E_flow_model, data):
         hdr2E_flow_model.prepare_inputs(self, data)
         
         # for Stage 2

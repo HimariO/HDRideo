@@ -171,9 +171,8 @@ class EvalMixin:
         h_idx = 1 - l_idx
 
         for exp_type, idx in zip(['low', 'high'], [l_idx, h_idx]):
-            idx = idx % len(hdr_psnr)
-            psnr = hdr_psnr[idx]
-            if len(psnr) > 0:
+            if 0 <= idx < len(hdr_psnr):
+                psnr = hdr_psnr[idx]
                 records['%s%s_psnr' % (exp_type, key)] = psnr.mean().item()
                 iter_res.append(records['%s%s_psnr' % (exp_type, key)])
 		
