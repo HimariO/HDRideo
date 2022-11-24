@@ -241,7 +241,6 @@ def ldr_to_ldr_v2(img, expo_l2h, expo_h2l):
 
 
 def save_hdr(name, hdr):
-    print(name)
     hdr = hdr[:, :, [2, 1, 0]].astype(np.float32)
     cv2.imwrite(name, hdr)
 
