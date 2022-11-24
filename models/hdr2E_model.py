@@ -14,66 +14,7 @@ from models import losses
 from collections import OrderedDict
 np.random.seed(0)
 
-class hdr2E_model(BaseModel):
-    @staticmethod
-    def modify_commandline_options(parser, is_train=True):
-        parser.add_argument('--mnet_name', default='weight_net', help='mnet means merge net')
-        parser.add_argument('--mnet_checkp', default='')
-        parser.add_argument('--mnet_afunc', default='LReLU')
-        parser.add_argument('--test_root', default='mnet_checkp')
-        parser.add_argument('--nframes', type=int, default=3)
-        parser.add_argument('--nexps', type=int, default=2)
-
-        parser.add_argument('--tone_low', default=False, action='store_true')
-        parser.add_argument('--tone_ref', default=True, action='store_false')
-
-        if is_train:
-            parser.set_defaults(init_lr=0.001)
-
-        str_keys = ['mnet_name', 'mnet_afunc']
-        val_keys = []
-        bool_keys = [] 
-        bool_val_dicts = {}
-        bool_to_val_dicts = {}
-        return parser, str_keys, val_keys, bool_keys, bool_val_dicts, bool_to_val_dicts
-
-    def __init__(self, args, log):
-        opt = vars(args)
-        BaseModel.__init__(self, opt)
-        self.net_names = ['mnet']
-
-        c_in, c_out = self.get_io_ch_nums(opt)
-        other_opt = {}
-        self.mnet = self.import_network(args.mnet_name)(c_in, c_out, c_mid=512, use_bn=opt['use_bn'], 
-                afunc=opt['mnet_afunc'], other=other_opt)
-        self.mnet = mutils.init_net(self.mnet, init_type=opt['init_type'], gpu_ids=args.gpu_ids)
-
-        if self.is_train: # Criterion
-            self.config_optimizers(opt, log)
-        self.config_criterions(opt, log)
-
-        self.load_checkpoint(log)
-
-    def get_io_ch_nums(self, opt):
-        c_in = c_out = 9
-        if self.opt['in_ldr']:
-            c_in *= 2
-        return c_in, c_out
-
-    def config_criterions(self, opt, log):
-        self.hdr_crit = losses.HDRCrit(opt['hdr_loss'], mu=5000) 
-        self.ldr_crit = torch.nn.MSELoss()
-        self.smooth_crit = losses.SecondOrderSmoothnessLoss(reduction=False, getGrad=True)
-
-        if self.opt['vgg_l'] and self.is_train:
-            self.vgg_crit = losses.Vgg16Loss(layers=['relu1_2', 'relu2_2', 'relu3_3'], style_loss=False).to(self.device)
-
-
-    def config_optimizers(self, opt, log):
-        self.optimizer = torch.optim.Adam(self.mnet.parameters(), lr=opt['init_lr'], 
-                            betas=(opt['beta_1'], opt['beta_2']))
-        self.optimizers.append(self.optimizer)
-        self.setup_lr_scheduler() # defined in base model
+class PreprocessMixin:
 
     def prepare_inputs(self, data, prepare_train=True):
         self.nframes = self.opt['nframes']
@@ -119,8 +60,8 @@ class hdr2E_model(BaseModel):
         for i in range(1, len(ldrs)-1):
             if self.nexps == 2:
                 cur_h_idx = (expos[i] > expos[i-1]).view(-1).long()
-                two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
-                mask = self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr'])
+                # two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
+                mask = self.out_mask(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr'])
                 gt_ref_ws.append(1.0 - mask)
         
         tone_aug = self.opt['tone_low'] + self.opt['tone_ref']
@@ -170,65 +111,7 @@ class hdr2E_model(BaseModel):
                         ldrs[j][cur_l_idx] = noutils.pt_tone_ref_add_gaussian_noise(ldrs[j][cur_l_idx], stdv1=1e-3, stdv2=1e-3, scale=False)
                     else:
                         raise Exception('Unknown tone low mode')
-
-    def reuse_cached_data(self, data):
-        print('Reused cached data')
-        ldr_idx, hdr_idx = self.nframes - 1, self.nframes - 2
-        
-        reused_data_key = ['hdrs', 'log_hdrs', 'ldrs', 'l2hdrs', 'ldr_adjs', 'gt_ref_ws']
-        if self.opt['align']:
-            reused_data_key.append('matches')
-
-        for key in reused_data_key:
-            data[key] = self.cached_data[key]
-            data[key].pop(0)
-
-        hdr = data['hdr_%d' % hdr_idx]
-        ldr = data['ldr_%d' % ldr_idx]
-        data['hdrs'].append(hdr)
-        data['log_hdrs'].append(eutils.pt_mulog_transform(data['hdr_%d' % hdr_idx], self.mu))
-        data['ldrs'].append(ldr)
-
-        if self.opt['align']:
-            data['matches'].append(data['match_%d'%ldr_idx])
-        
-        expos = data['expos'].view(-1, self.nframes, 1, 1).split(1, 1)
-        data['expos'] = expos
-
-        cur_h_idx = (expos[hdr_idx] > expos[hdr_idx-1]).view(-1).long()
-        data['gt_ref_ws'].append(1.0 - self.get_out_mask_method()(data['ldrs'][hdr_idx], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr']))
-
-        data['l2hdrs'].append(mutils.pt_ldr_to_hdr(ldr, expos[ldr_idx]))
-
-        cur_h_idx = (expos[ldr_idx] > expos[ldr_idx-1]).view(-1).long()
-
-        data['ldr_adjs'].append(mutils.pt_ldr_to_ldr(ldr, expos[ldr_idx], expos[ldr_idx-1]))
-
-    def get_out_mask_method(self):
-        if self.opt['soft_mo']:
-            get_out_mask_method = mutils.pt_get_out_blend_mask
-        else:
-            get_out_mask_method = mutils.pt_ldr_to_1c_mask
-        return get_out_mask_method
-        
-    def forward(self, split='train'):
-        self.split = split
-        self.prepare_inputs(self.data)
-
-        net_in, merge_hdrs = self.prepare_mnet_inputs(self.opt, self.data) 
-        self.pred = self.mnet(net_in, merge_hdrs)
     
-        if self.opt['mask_o']:
-            mask = self.data['gt_ref_ws'][self.hdr_mid]
-            self.pred['hdr'] = self.data['l2hdrs'][self.ldr_mid] * mask + self.pred['hdr'] * (1 - mask)
-
-        self.pred['log_hdr'] = eutils.pt_mulog_transform(self.pred['hdr'], self.mu)
-
-        if not self.is_train:
-            self.cached_data = self.data
-        self.loss_terms = None
-        return self.pred
-
     def prepare_mnet_inputs(self, opt, data, idxs=[0,1,2]):
         pi, ci, ni = idxs
         prev, cur, nxt = data['ldrs'][pi], data['ldrs'][ci], data['ldrs'][ni]
@@ -246,32 +129,9 @@ class hdr2E_model(BaseModel):
         merge_hdrs = [prev_hdr, cur_hdr, nxt_hdr]
         return net_in, merge_hdrs
 
-    def optimize_weights(self):
-        self.loss_terms = {}
 
-        if self.opt['mask_o']:
-            roi = 1 - self.data['gt_ref_ws'][self.hdr_mid]
+class EvalMixin:
 
-            hdr_loss = self.hdr_crit(self.pred['log_hdr'] * roi, self.data['log_hdrs'][self.hdr_mid] * roi) / (roi.mean() + 1e-8)
-            hdr_loss = self.opt['hdr_w'] * hdr_loss
-            self.loss_terms['mhdr_loss'] = hdr_loss.item()
-
-        else:
-            hdr_loss = self.opt['hdr_w'] * self.hdr_crit(self.pred['log_hdr'], self.data['log_hdrs'][self.hdr_mid])
-            self.loss_terms['hdr_loss'] = hdr_loss.item()
-
-        self.loss = hdr_loss
-
-        if self.opt['vgg_l']:
-            vgg_l, vgg_l_term = self.vgg_crit(self.pred['log_hdr'], self.data['log_hdrs'][self.hdr_mid])
-            self.loss += self.opt['vgg_w'] * vgg_l
-            for k in vgg_l_term: 
-                self.loss_terms[k] = vgg_l_term[k]
-
-        self.optimizer.zero_grad()
-        self.loss.backward()
-        self.optimizer.step()
-   
     def prepare_records(self):
         data, pred = self.data, self.pred
         records = OrderedDict()
@@ -352,16 +212,7 @@ class hdr2E_model(BaseModel):
             new_visuals = eutils.crop_list_of_tensors(visuals, data['hw'])
             return new_visuals
         return visuals
-
-    def prepare_predict(self):
-        if (self.split not in ['train', 'val']) and ('log_hdr_sat' in self.pred):
-            prediction = [self.pred['log_hdr_sat']]
-        else:
-            prediction = [self.pred['log_hdr'].detach()]
-        if self.opt['origin_hw']: 
-            prediction = eutils.crop_list_of_tensors(prediction, self.data['hw'])
-        return prediction 
-
+    
     def save_visual_details(self, log, split, epoch, i):
         save_dir = log.config_save_detail_dir(split, epoch)
         data, pred = self.data, self.pred
@@ -372,3 +223,163 @@ class hdr2E_model(BaseModel):
         hdr_numpy = hdr[0].cpu().numpy().transpose(1, 2, 0)
         hdr_name = os.path.join(save_dir, '%04d_%s_%s.hdr' % (i, data['scene'][0], data['img_name'][0]))
         iutils.save_hdr(hdr_name, hdr_numpy)
+
+
+
+class hdr2E_model(PreprocessMixin, EvalMixin, BaseModel):
+    @staticmethod
+    def modify_commandline_options(parser, is_train=True):
+        parser.add_argument('--mnet_name', default='weight_net', help='mnet means merge net')
+        parser.add_argument('--mnet_checkp', default='')
+        parser.add_argument('--mnet_afunc', default='LReLU')
+        parser.add_argument('--test_root', default='mnet_checkp')
+        parser.add_argument('--nframes', type=int, default=3)
+        parser.add_argument('--nexps', type=int, default=2)
+
+        parser.add_argument('--tone_low', default=False, action='store_true')
+        parser.add_argument('--tone_ref', default=True, action='store_false')
+
+        if is_train:
+            parser.set_defaults(init_lr=0.001)
+
+        str_keys = ['mnet_name', 'mnet_afunc']
+        val_keys = []
+        bool_keys = [] 
+        bool_val_dicts = {}
+        bool_to_val_dicts = {}
+        return parser, str_keys, val_keys, bool_keys, bool_val_dicts, bool_to_val_dicts
+
+    def __init__(self, args, log):
+        opt = vars(args)
+        BaseModel.__init__(self, opt)
+        self.net_names = ['mnet']
+
+        c_in, c_out = self.get_io_ch_nums(opt)
+        other_opt = {}
+        self.mnet = self.import_network(args.mnet_name)(c_in, c_out, c_mid=512, use_bn=opt['use_bn'], 
+                afunc=opt['mnet_afunc'], other=other_opt)
+        self.mnet = mutils.init_net(self.mnet, init_type=opt['init_type'], gpu_ids=args.gpu_ids)
+
+        if self.is_train: # Criterion
+            self.config_optimizers(opt, log)
+        self.config_criterions(opt, log)
+
+        self.load_checkpoint(log)
+
+    def get_io_ch_nums(self, opt):
+        c_in = c_out = 9
+        if self.opt['in_ldr']:
+            c_in *= 2
+        return c_in, c_out
+
+    def config_criterions(self, opt, log):
+        self.hdr_crit = losses.HDRCrit(opt['hdr_loss'], mu=5000) 
+        self.ldr_crit = torch.nn.MSELoss()
+        self.smooth_crit = losses.SecondOrderSmoothnessLoss(reduction=False, getGrad=True)
+
+        if self.opt['vgg_l'] and self.is_train:
+            self.vgg_crit = losses.Vgg16Loss(layers=['relu1_2', 'relu2_2', 'relu3_3'], style_loss=False).to(self.device)
+
+
+    def config_optimizers(self, opt, log):
+        self.optimizer = torch.optim.Adam(self.mnet.parameters(), lr=opt['init_lr'], 
+                            betas=(opt['beta_1'], opt['beta_2']))
+        self.optimizers.append(self.optimizer)
+        self.setup_lr_scheduler() # defined in base model
+
+    def reuse_cached_data(self, data):
+        print('Reused cached data')
+        ldr_idx, hdr_idx = self.nframes - 1, self.nframes - 2
+        
+        reused_data_key = ['hdrs', 'log_hdrs', 'ldrs', 'l2hdrs', 'ldr_adjs', 'gt_ref_ws']
+        if self.opt['align']:
+            reused_data_key.append('matches')
+
+        for key in reused_data_key:
+            data[key] = self.cached_data[key]
+            data[key].pop(0)
+
+        hdr = data['hdr_%d' % hdr_idx]
+        ldr = data['ldr_%d' % ldr_idx]
+        data['hdrs'].append(hdr)
+        data['log_hdrs'].append(eutils.pt_mulog_transform(data['hdr_%d' % hdr_idx], self.mu))
+        data['ldrs'].append(ldr)
+
+        if self.opt['align']:
+            data['matches'].append(data['match_%d'%ldr_idx])
+        
+        expos = data['expos'].view(-1, self.nframes, 1, 1).split(1, 1)
+        data['expos'] = expos
+
+        cur_h_idx = (expos[hdr_idx] > expos[hdr_idx-1]).view(-1).long()
+        data['gt_ref_ws'].append(1.0 - self.out_mask(data['ldrs'][hdr_idx], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=self.opt['o_lthr']))
+
+        data['l2hdrs'].append(mutils.pt_ldr_to_hdr(ldr, expos[ldr_idx]))
+
+        cur_h_idx = (expos[ldr_idx] > expos[ldr_idx-1]).view(-1).long()
+
+        data['ldr_adjs'].append(mutils.pt_ldr_to_ldr(ldr, expos[ldr_idx], expos[ldr_idx-1]))
+
+    @property
+    def out_mask(self):
+        if self.opt['soft_mo']:
+            get_out_mask_method = mutils.pt_get_out_blend_mask
+        else:
+            get_out_mask_method = mutils.pt_ldr_to_1c_mask
+        return get_out_mask_method
+
+    def get_out_mask_method(self):
+        return self.out_mask
+        
+    def forward(self, split='train'):
+        self.split = split
+        self.prepare_inputs(self.data)
+
+        net_in, merge_hdrs = self.prepare_mnet_inputs(self.opt, self.data) 
+        self.pred = self.mnet(net_in, merge_hdrs)
+    
+        if self.opt['mask_o']:
+            mask = self.data['gt_ref_ws'][self.hdr_mid]
+            self.pred['hdr'] = self.data['l2hdrs'][self.ldr_mid] * mask + self.pred['hdr'] * (1 - mask)
+
+        self.pred['log_hdr'] = eutils.pt_mulog_transform(self.pred['hdr'], self.mu)
+
+        if not self.is_train:
+            self.cached_data = self.data
+        self.loss_terms = None
+        return self.pred    
+
+    def optimize_weights(self):
+        self.loss_terms = {}
+
+        if self.opt['mask_o']:
+            roi = 1 - self.data['gt_ref_ws'][self.hdr_mid]
+
+            hdr_loss = self.hdr_crit(self.pred['log_hdr'] * roi, self.data['log_hdrs'][self.hdr_mid] * roi) / (roi.mean() + 1e-8)
+            hdr_loss = self.opt['hdr_w'] * hdr_loss
+            self.loss_terms['mhdr_loss'] = hdr_loss.item()
+
+        else:
+            hdr_loss = self.opt['hdr_w'] * self.hdr_crit(self.pred['log_hdr'], self.data['log_hdrs'][self.hdr_mid])
+            self.loss_terms['hdr_loss'] = hdr_loss.item()
+
+        self.loss = hdr_loss
+
+        if self.opt['vgg_l']:
+            vgg_l, vgg_l_term = self.vgg_crit(self.pred['log_hdr'], self.data['log_hdrs'][self.hdr_mid])
+            self.loss += self.opt['vgg_w'] * vgg_l
+            for k in vgg_l_term: 
+                self.loss_terms[k] = vgg_l_term[k]
+
+        self.optimizer.zero_grad()
+        self.loss.backward()
+        self.optimizer.step()
+   
+    def prepare_predict(self):
+        if (self.split not in ['train', 'val']) and ('log_hdr_sat' in self.pred):
+            prediction = [self.pred['log_hdr_sat']]
+        else:
+            prediction = [self.pred['log_hdr'].detach()]
+        if self.opt['origin_hw']: 
+            prediction = eutils.crop_list_of_tensors(prediction, self.data['hw'])
+        return prediction 

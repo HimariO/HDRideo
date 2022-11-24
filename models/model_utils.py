@@ -108,6 +108,7 @@ def pt_ldr_to_1c_mask(ldr, h_idx, h_thr=0.85, l_thr=0.35):
     """
     h_idx: high exposure ldr image index?
     """
+    # HACK hot patch index error from h_idx
     n, c, h, w = ldr.shape
     exp_mask = torch.zeros((n, 1, h, w), device=ldr.device)
 

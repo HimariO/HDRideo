@@ -30,7 +30,7 @@ class PreprocessMixin:
             neighb_idx = 1 if i == 0 else i - 1
             cur_h_idx = (expos[i] > expos[neighb_idx]).view(-1).long()
             # two = torch.cat([ldrs[neighb_idx], ldrs[i]], dim=0)
-            expm2 = self.get_expos2_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr'])
+            expm2 = self.expos2_mask(ldrs[i], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr'])
             expms2.append(expm2)
 
         stage1_out_mask = []
@@ -38,12 +38,13 @@ class PreprocessMixin:
             if self.nexps == 2:
                 cur_h_idx = (expos[i] > expos[i-1]).view(-1).long()
                 two = torch.cat([ldrs[i - 1], ldrs[i]], dim=0)
-                mask = 1.0 - self.get_out_mask_method()(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=0.4)
+                mask = 1.0 - self.out_mask(ldrs[i], cur_h_idx, h_thr=self.opt['o_hthr'], l_thr=0.4)
                 stage1_out_mask.append(mask)
 
         data.update({'expms2': expms2, 'stage1_out_mask': stage1_out_mask})
 
-    def get_expos2_mask_method(self):
+    @property
+    def expos2_mask(self):
         get_expos_mask_method = mutils.pt_get_in_exposure_mask
         return get_expos_mask_method
     
@@ -112,12 +113,12 @@ class PreprocessMixin:
         """  
         new_data['expms2'] = [None]
         cur_h_idx = self.get_high_expo_idxs(data['expos'], self.ldr_mid-1)
-        new_data['expms2'].append(self.get_expos2_mask_method()(ldrs[1], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
+        new_data['expms2'].append(self.expos2_mask(ldrs[1], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
 
         new_data['expms2'].append(data['expms2'][self.ldr_mid]) # Okay
 
         cur_h_idx = self.get_high_expo_idxs(data['expos'], self.ldr_mid+1)
-        new_data['expms2'].append(self.get_expos2_mask_method()(ldrs[3], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
+        new_data['expms2'].append(self.expos2_mask(ldrs[3], cur_h_idx, h_thr=self.opt['hthr'], l_thr=self.opt['lthr']))
 
         new_data['expos'] = data['expos']
         new_data['gt_ref_ws'] = data['gt_ref_ws']
@@ -149,8 +150,16 @@ class EvalMixin:
 
         # stage 1
         for i in range(self.hdr_mid, self.hdr_mid+1):
-            gt = {'hdr': data['hdrs'][i], 'log_hdr': data['log_hdrs'][i], 'c_expo': data['expos'][i+1], 'p_expo': data['expos'][i]}
-            pred = {'hdr': self.preds[i]['hdr'], 'log_hdr': self.preds[i]['log_hdr']}
+            gt = {
+                'hdr': data['hdrs'][i],
+                'log_hdr': data['log_hdrs'][i],
+                'c_expo': data['expos'][i+1],
+                'p_expo': data['expos'][i]
+            }
+            pred = {
+                'hdr': self.preds[i]['hdr'], 
+                'log_hdr': self.preds[i]['log_hdr']
+            }
             records_sub, iter_res_sub = self._prepare_records(gt, pred, key='%d'%(i+1))
             records.update(records_sub)
             iter_res += iter_res_sub
@@ -164,7 +173,11 @@ class EvalMixin:
         pred2 = self.pred2
 
         visuals = []
-        visuals += [data['log_hdrs'][self.hdr_mid], pred2['log_hdr'], preds[self.hdr_mid]['log_hdr']]
+        visuals += [
+            data['log_hdrs'][self.hdr_mid], 
+            pred2['log_hdr'], 
+            preds[self.hdr_mid]['log_hdr']
+        ]
         diff = eutils.pt_cal_diff_map(pred2['log_hdr'].detach(), data['log_hdrs'][self.hdr_mid])
         visuals.append(eutils.pt_colormap(diff))
         diff = eutils.pt_cal_diff_map(preds[self.hdr_mid]['log_hdr'].detach(), data['log_hdrs'][self.hdr_mid])
