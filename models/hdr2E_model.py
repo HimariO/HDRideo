@@ -47,13 +47,13 @@ class PreprocessMixin:
                 matches.append(data['match_%d' % i])
             data['matches'] = matches
 
-        if self.opt['clean_in']: # Depreciated, can be ignored
-            clean_l2hdrs = []
-            clean_ldrs = []
-            for i in range(self.nframes):
-                clean_ldrs.append(ldrs[i].clone())
-                clean_l2hdrs.append(mutils.pt_ldr_to_hdr(ldrs[i], expos[i]))
-            data.update({'clean_ldrs': clean_ldrs, 'clean_l2hdrs': clean_l2hdrs})
+        # if self.opt['clean_in']: # Depreciated, can be ignored
+        #     clean_l2hdrs = []
+        #     clean_ldrs = []
+        #     for i in range(self.nframes):
+        #         clean_ldrs.append(ldrs[i].clone())
+        #         clean_l2hdrs.append(mutils.pt_ldr_to_hdr(ldrs[i], expos[i]))
+        #     data.update({'clean_ldrs': clean_ldrs, 'clean_l2hdrs': clean_l2hdrs})
         
         # well-exposed mask
         gt_ref_ws = []
@@ -80,14 +80,22 @@ class PreprocessMixin:
         assert(len(expos) == len(ldrs))
 
         ldr_adjs = []
+        # NOTE: adjust ldr image to the same as its neighbor, so alignment model can work better.
         for i in range(0, len(ldrs)):
             if i > 0:
                 ldr_adjs.append(mutils.pt_ldr_to_ldr(ldrs[i], expos[i], expos[i-1]))
             else:
                 ldr_adjs.append(mutils.pt_ldr_to_ldr(ldrs[i], expos[i], expos[i+1]))
 
-        data.update({'hdrs': hdrs, 'log_hdrs': log_hdrs, 'ldrs': ldrs, 'l2hdrs': l2hdrs, 'ldr_adjs': ldr_adjs,
-            'expos': expos, 'gt_ref_ws': gt_ref_ws})
+        data.update({
+            'hdrs': hdrs, 
+            'log_hdrs': log_hdrs,
+            'ldrs': ldrs,
+            'l2hdrs': l2hdrs,
+            'ldr_adjs': ldr_adjs,
+            'expos': expos, 
+            'gt_ref_ws': gt_ref_ws,
+        })
 
     def perturb_low_expo_imgs(self, ldrs, expos):
         need_aug = (self.opt['aug_prob'] == 1.0) or (np.random.uniform() < self.opt['aug_prob'])

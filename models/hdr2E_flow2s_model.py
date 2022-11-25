@@ -279,13 +279,28 @@ class hdr2E_flow2s_model(PreprocessMixin, EvalMixin, hdr2E_flow_model):
         # Stage 1
         c_in_fnet, c_out_fnet = 9, 4
         other_opt = {}
-        self.fnet = self.import_network(args.fnet_name, backup_module='flow_networks')(
-                c_in=c_in_fnet, c_out=c_out_fnet, requires_grad=self.opt['up_s1'], other=other_opt)
+        self.fnet = self.import_network(
+            args.fnet_name, 
+            backup_module='flow_networks'
+        )(
+            c_in=c_in_fnet,
+            c_out=c_out_fnet,
+            requires_grad=self.opt['up_s1'],
+            other=other_opt
+        )
         self.fnet = mutils.init_net(self.fnet, init_type=opt['fnet_init'], gpu_ids=args.gpu_ids)
 
         other_opt = {}
         c_in_mnet, c_out_mnet, c_mid = 30, 15, opt['cmid']
-        self.mnet = self.import_network(args.mnet_name)(c_in_mnet, c_out_mnet, c_mid=c_mid, use_bn=opt['use_bn'], afunc=opt['mnet_afunc'])
+        self.mnet = self.import_network(
+            args.mnet_name
+        )(
+            c_in_mnet,
+            c_out_mnet,
+            c_mid=c_mid,
+            use_bn=opt['use_bn'],
+            afunc=opt['mnet_afunc']
+        )
         self.mnet = mutils.init_net(self.mnet, init_type=opt['init_type'], gpu_ids=args.gpu_ids)
 
         if not self.opt['up_s1']: # if update stage 1, for end-to-end finetune
@@ -300,9 +315,18 @@ class hdr2E_flow2s_model(PreprocessMixin, EvalMixin, hdr2E_flow_model):
         c_in, c_out = self.get_stage2_io_ch_nums(opt)
         other_opt = {'PCD': opt['PCD'], 'TAM': opt['TAM']}
 
-        self.mnet2 = self.import_network(args.mnet2_name)(c_in=c_in, c_out=3, nf=64, nframes=3, groups=8,
-                front_RBs=5, back_RBs=10, other=other_opt)
-
+        self.mnet2 = self.import_network(
+            args.mnet2_name
+        )(
+            c_in=c_in,
+            c_out=3,
+            nf=64,
+            nframes=3,
+            groups=8,
+            front_RBs=5, 
+            back_RBs=10, 
+            other=other_opt
+        )
         self.mnet2 = mutils.init_net(self.mnet2, init_type=opt['init_type'], gpu_ids=args.gpu_ids)
 
         if self.is_train: # Criterion
@@ -382,7 +406,7 @@ class hdr2E_flow2s_model(PreprocessMixin, EvalMixin, hdr2E_flow_model):
             mpred = self.mnet(mnet1_in, merge_hdrs)
 
             if self.opt['m1_mo']:
-                mask = data['stage1_out_mask'][ci-1]
+                mask = data['stage1_out_mask'][ci - 1]
                 mpred['hdr'] = data['l2hdrs'][ci] * mask + mpred['hdr'] * (1 - mask)
 
             mu = 5000 if self.split not in ['train', 'val'] else self.mu

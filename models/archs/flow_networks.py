@@ -138,8 +138,10 @@ class spynet_2triple(nn.Module):
             print('*** Spynet: Share weights for different layers**')
             self.moduleBasic = Basic(0, c_in=c_in, c_out=c_out, afunc='ReLU')
         else:
-            self.moduleBasic = torch.nn.ModuleList([Basic(
-                i, c_in=c_in, c_out=c_out, afunc='ReLU') for i in range(self.scales) ])
+            self.moduleBasic = torch.nn.ModuleList([
+                Basic(i, c_in=c_in, c_out=c_out, afunc='ReLU')
+                for i in range(self.scales) 
+            ])
 
         self.backward_grid = {}
         if not requires_grad:
