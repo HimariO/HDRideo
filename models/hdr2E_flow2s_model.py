@@ -443,14 +443,18 @@ class hdr2E_flow2s_model(PreprocessMixin, EvalMixin, hdr2E_flow_model):
             self.preds.append(mpred)
 
     def forward_stage2(self):
-        data = self.data
-
         if not self.is_train and self.opt['align']:
-            mnet2_in = self.prepare_aligned_mnet2_inputs(self.data, self.preds, self.aligned_ldrs[1], [0, 1, 2])
-        else:
+            mnet2_in = self.prepare_aligned_mnet2_inputs(
+                self.data,
+                self.preds,
+                self.aligned_ldrs[1],
+                [0, 1, 2]
+            )
+        else:  # inference
             mnet2_in = self.prepare_inputs_direct2(self.data, self.preds, [0,1,2])
 
-        self.pred2 = self.mnet2(mnet2_in)
+        self.pred2 = self.mnet2(mnet2_in['x'], **mnet2_in)
+        
         if self.opt['mask_o']:
             mask = self.data['gt_ref_ws'][self.hdr_mid]
             self.pred2['hdr'] = self.preds[1]['hdr'] * mask + self.pred2['hdr'] * (1 - mask)

@@ -213,7 +213,7 @@ class hdr3E_flow2s_model(hdr3E_flow_model):
         else:
             mnet2_in = self.prepare_inputs_direct2(self.data, self.preds, [0,1,2])
 
-        self.pred2 = self.mnet2(mnet2_in)
+        self.pred2 = self.mnet2(mnet2_in['x'], **mnet2_in)
         if self.opt['mask_o']:
             mask = self.data['gt_ref_ws'][self.hdr_mid]
             self.pred2['hdr'] = self.preds[1]['hdr'] * mask + self.pred2['hdr'] * (1 - mask)

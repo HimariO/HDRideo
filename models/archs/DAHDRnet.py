@@ -60,8 +60,8 @@ class DAHDRnet(nn.Module):
         #### activation function
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
-    def forward(self, inputs):
-        x = inputs['x']
+    def forward(self, x, **inputs):
+        # x = inputs['x']
         B, N, C, H, W = x.size()  # N video frames
 
         pad_img = False
@@ -103,7 +103,7 @@ class DAHDRnet(nn.Module):
             L3_fea[:, self.center, :, :, :].clone()
         ]
 
-        if self.other['PCD'] == 'EPCD':
+        if self.other['PCD'] == 'EPCD':  # not used in 2e_flow2s inferece
             exp_mask_l = self.get_multi_scale_exp_mask(inputs)
 
         aligned_fea = []
@@ -127,6 +127,7 @@ class DAHDRnet(nn.Module):
             exp_mask = self.get_exp_mask(inputs)
             fea = self.ta_fusion(aligned_fea, exp_mask) # [B, C, H, W]
         else:
+            # inferece with this case
             fea = self.ta_fusion(aligned_fea) # [B, C, H, W]
 
         out = self.recon_trunk(fea)
