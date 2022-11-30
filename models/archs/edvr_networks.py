@@ -85,9 +85,9 @@ class ModulatedDeformConv(nn.Module):
 
 
 class DCN(ModulatedDeformConv):
-    def __init__(self, *args, extra_offset_mask=False, **kwargs):
+    def __init__(self, *args, extra_offset_mask=False, export_mode=True, **kwargs):
         super(DCN, self).__init__(*args, **kwargs)
-
+        self.export_mode = export_mode
         self.extra_offset_mask = extra_offset_mask
         self.conv_offset_mask = nn.Conv2d(
             self.in_channels,
@@ -115,11 +115,39 @@ class DCN(ModulatedDeformConv):
         if offset_mean > 100:
             logger.warning('Offset mean is {}, larger than 100.'.format(offset_mean))
 
-        return deform_conv2d(x, offset, self.weight, bias=self.bias, mask=mask,
+        if not self.export_mode:
+            return deform_conv2d(x, offset, self.weight, bias=self.bias, mask=mask,
+                        stride=self.stride, padding=self.padding, dilation=self.dilation)
+            # return modulated_deform_conv(x, offset, mask, self.weight, self.bias, self.stride,
+            #                              self.padding, self.dilation, self.groups,
+            #                              self.deformable_groups)
+        else:
+            """
+            # raise NotImplementedError("Not sure wnat deformable groups is for")
+            https://github.com/msracver/Deformable-ConvNets/issues/268
+
+            HACK do the deformable grouping by hand, so we don't need to implemnt it in tflite
+            """
+            
+            group_size = self.kernel_size[0] * self.kernel_size[1]
+            o1_groups = torch.split(o1, group_size, dim=1)
+            o2_groups = torch.split(o2, group_size, dim=1)
+            offsets = [
+                torch.cat([_o1, _o2], dim=1)
+                for _o1, _o2 in zip(o1_groups, o2_groups)
+            ]
+            masks = torch.split(mask, group_size, dim=1)
+            # xs = torch.split(x, self.in_channels // self.deformable_groups, dim=1)
+            ws = torch.split(self.weight, self.out_channels // self.deformable_groups, dim=0)
+            bs = torch.split(self.bias, self.out_channels // self.deformable_groups, dim=0)
+
+            ys = [
+                deform_conv2d(
+                    x, _offset, _w, bias=_b, mask=_mask,
                     stride=self.stride, padding=self.padding, dilation=self.dilation)
-        # return modulated_deform_conv(x, offset, mask, self.weight, self.bias, self.stride,
-        #                              self.padding, self.dilation, self.groups,
-        #                              self.deformable_groups)
+                for _w, _b, _offset, _mask in zip(ws, bs, offsets, masks)
+            ]
+            return torch.cat(ys, dim=1)
 
 
 class ResidualBlock_BN(nn.Module):

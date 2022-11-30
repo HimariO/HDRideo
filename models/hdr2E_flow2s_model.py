@@ -452,8 +452,10 @@ class hdr2E_flow2s_model(PreprocessMixin, EvalMixin, hdr2E_flow_model):
             )
         else:  # inference
             mnet2_in = self.prepare_inputs_direct2(self.data, self.preds, [0,1,2])
-
-        self.pred2 = self.mnet2(mnet2_in['x'], **mnet2_in)
+        
+        x = mnet2_in['x']
+        del mnet2_in['x']
+        self.pred2 = self.mnet2(x, **mnet2_in)
         
         if self.opt['mask_o']:
             mask = self.data['gt_ref_ws'][self.hdr_mid]
