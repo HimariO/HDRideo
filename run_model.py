@@ -61,6 +61,7 @@ def exprot_fine_model(model):
     inputs = {
         "x": torch.randn(1, 3, 6, 480, 640, requires_grad=True),
     }
+
     torch.onnx.export(
         model.mnet2.module.cpu(),
         (inputs['x'], inputs),
@@ -87,8 +88,9 @@ def main(args):
     # log.plot_curves(recorder, 'test')
     model = model
     model.eval()
+    exprot_flow_model(model)
     # exprot_weight_model(model)
-    exprot_fine_model(model)
+    # exprot_fine_model(model)
 
     
 

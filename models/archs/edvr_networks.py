@@ -85,7 +85,7 @@ class ModulatedDeformConv(nn.Module):
 
 
 class DCN(ModulatedDeformConv):
-    def __init__(self, *args, extra_offset_mask=False, export_mode=True, **kwargs):
+    def __init__(self, *args, extra_offset_mask=False, export_mode=False, **kwargs):
         super(DCN, self).__init__(*args, **kwargs)
         self.export_mode = export_mode
         self.extra_offset_mask = extra_offset_mask

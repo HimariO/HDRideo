@@ -196,15 +196,31 @@ class MergeHDRModule(nn.Module):
 ## Flow warping
 def generate_grid(img):
     n, c, h, w = img.shape
-    hori_grid = torch.linspace(-1.0, 1.0, w).view(1, 1, 1, w).expand(n, -1, h, -1).to(img.device)
-    vert_grid = torch.linspace(-1.0, 1.0, h).view(1, 1, h, 1).expand(n, -1, -1, w).to(img.device)
+    hori_grid = torch.linspace(-1.0, 1.0, w).view(1, 1, 1, w).expand(n, -1, h, -1).tolist()
+    vert_grid = torch.linspace(-1.0, 1.0, h).view(1, 1, h, 1).expand(n, -1, -1, w).tolist()
     print('Creating grid: %s' % (str(img.shape)))
+
+    # HACK: cuf off JIT tracing, so "grid" will be just a constant in the resulting compute graph
+    hori_grid = torch.tensor(hori_grid, device=img.device)
+    vert_grid = torch.tensor(vert_grid, device=img.device)
     grid = torch.cat([hori_grid, vert_grid], 1) #[-1, 1]
     return grid #[hori_grid, vert_grid]
 
+
+# def generate_grid(img):
+#     n, c, h, w = img.shape
+#     hori_grid = torch.linspace(-1.0, 1.0, w).view(1, 1, 1, w).expand(n, -1, h, -1).to(img.device)
+#     vert_grid = torch.linspace(-1.0, 1.0, h).view(1, 1, h, 1).expand(n, -1, -1, w).to(img.device)
+#     print('Creating grid: %s' % (str(img.shape)))
+#     grid = torch.cat([hori_grid, vert_grid], 1) #[-1, 1]
+#     return grid #[hori_grid, vert_grid]
+
+
 def backward_warp(img, flow, grid, pad='zeros'):
     n, c, h, w = img.shape
-    flow = torch.cat([flow[:, 0:1, :, :] / ((w - 1.0) / 2.0), flow[:, 1:2, :, :] / ((h - 1.0) / 2.0)], 1) # [-2, 2]
+    flow = torch.cat([
+        flow[:, 0:1, :, :] / ((w - 1.0) / 2.0),
+        flow[:, 1:2, :, :] / ((h - 1.0) / 2.0)], 1) # [-2, 2]
     accum_flow = grid + flow # [-1, 1]
     warped_img = torch.nn.functional.grid_sample(
         input=img, grid=accum_flow.permute(0, 2, 3, 1), 
