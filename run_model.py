@@ -1,5 +1,7 @@
+import os
 import torch
 import torch.onnx
+import numpy as np
 
 from options import run_model_opts
 from utils import logger, recorders, test_utils
@@ -29,6 +31,14 @@ def exprot_flow_model(model):
         },
         opset_version=16,
     )
+
+    if not os.path.exists("flownet_input_0.arr"):
+        for i, xx in enumerate(x):
+            xx = xx.cpu().detach().numpy()
+            # xx = np.transpose(xx, [0, 2, 3, 1])
+            binary = xx.tobytes()
+            with open(f"flownet_input_{i}.arr", mode='wb') as f:
+                f.write(binary)
 
 
 def exprot_weight_model(model):
@@ -78,6 +88,24 @@ def exprot_fine_model(model):
     )
 
 
+def dryrun_flownet(model):
+    flownet = model.fnet.module.cpu()
+    inputs = []
+    for i in range(3):
+        with open(f"flownet_input_{i}.arr", mode='rb') as f:
+            tensor = np.frombuffer(f.read(), dtype=np.float32)
+            tensor = tensor.reshape([1, 3, 480, 640])
+            # tensor = np.transpose(tensor, (0, 3, 1, 2))
+            tensor = torch.tensor(tensor)
+            inputs.append(tensor)
+    
+    out = flownet(inputs)
+    out = np.concatenate([out['flow1'], out['flow2']])
+    # out = np.transpose(out, (0, 2, 3, 1))
+    print(out)
+    np.savez('flownet_pt_out.npz', pred=out)
+
+
 def main(args):
     test_loader = benchmark_loader(args, log)
     model: torch.nn.DataParallel = build_model(args, log)
@@ -86,11 +114,11 @@ def main(args):
     # test_utils.test(args, log, 'test', test_loader, model, 1, recorder)
 
     # log.plot_curves(recorder, 'test')
-    model = model
     model.eval()
-    exprot_flow_model(model)
+    # exprot_flow_model(model)
     # exprot_weight_model(model)
     # exprot_fine_model(model)
+    dryrun_flownet(model)
 
     
 

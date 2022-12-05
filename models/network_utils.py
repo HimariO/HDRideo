@@ -194,10 +194,14 @@ class MergeHDRModule(nn.Module):
         return hdr, ws
 
 ## Flow warping
-def generate_grid(img):
+def generate_grid(img, tflite_export=False):
     n, c, h, w = img.shape
-    hori_grid = torch.linspace(-1.0, 1.0, w).view(1, 1, 1, w).expand(n, -1, h, -1).tolist()
-    vert_grid = torch.linspace(-1.0, 1.0, h).view(1, 1, h, 1).expand(n, -1, -1, w).tolist()
+    if not tflite_export:
+        hori_grid = torch.linspace(-1.0, 1.0, w).view(1, 1, 1, w).expand(n, -1, h, -1).tolist()
+        vert_grid = torch.linspace(-1.0, 1.0, h).view(1, 1, h, 1).expand(n, -1, -1, w).tolist()
+    else:
+        hori_grid = torch.linspace(0, w, w).view(1, 1, 1, w).expand(n, -1, h, -1).tolist()
+        vert_grid = torch.linspace(0, h, h).view(1, 1, h, 1).expand(n, -1, -1, w).tolist()
     print('Creating grid: %s' % (str(img.shape)))
 
     # HACK: cuf off JIT tracing, so "grid" will be just a constant in the resulting compute graph
@@ -216,12 +220,19 @@ def generate_grid(img):
 #     return grid #[hori_grid, vert_grid]
 
 
-def backward_warp(img, flow, grid, pad='zeros'):
+def backward_warp(img, flow, grid, pad='zeros', tflite_export=False):
     n, c, h, w = img.shape
-    flow = torch.cat([
-        flow[:, 0:1, :, :] / ((w - 1.0) / 2.0),
-        flow[:, 1:2, :, :] / ((h - 1.0) / 2.0)], 1) # [-2, 2]
+
+    if not tflite_export:
+        flow = torch.cat([
+            flow[:, 0:1, :, :] / ((w - 1.0) / 2.0),
+            flow[:, 1:2, :, :] / ((h - 1.0) / 2.0),
+        ], 1) # [-2, 2]
+    else:
+        # NOTE: we assume "grid"'s value will be [0:h/w], instead of [-1:1]
+        pass
     accum_flow = grid + flow # [-1, 1]
+    
     warped_img = torch.nn.functional.grid_sample(
         input=img, grid=accum_flow.permute(0, 2, 3, 1), 
         mode='bilinear',  padding_mode='zeros', align_corners=True) 

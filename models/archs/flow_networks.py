@@ -50,6 +50,8 @@ class spynet_triple(nn.Module):
             print('Spynet does not require grads!')
             for param in self.parameters():
                 param.requires_grad = False
+        
+        self.export2tflite = False
 
     def prepare_inputs(self, data):
         prev, cur, nxt = data
@@ -81,12 +83,12 @@ class spynet_triple(nn.Module):
                 shape = prev_pyramid[i].shape
                 grid_key = str(prev_pyramid[i].device) + '_' + str(shape)
                 if grid_key not in self.backward_grid:
-                    self.backward_grid[grid_key] = nutils.generate_grid(prev_pyramid[i])
+                    self.backward_grid[grid_key] = nutils.generate_grid(prev_pyramid[i], tflite_export=self.export2tflite)
                 # upsample
                 up_flow1 = torch.nn.functional.interpolate(flow1, scale_factor=2, mode='bilinear', align_corners=True) * 2.0
                 up_flow2 = torch.nn.functional.interpolate(flow2, scale_factor=2, mode='bilinear', align_corners=True) * 2.0
-                p = nutils.backward_warp(prev_pyramid[i], up_flow1, self.backward_grid[grid_key])
-                n = nutils.backward_warp(nxt_pyramid[i], up_flow2, self.backward_grid[grid_key])
+                p = nutils.backward_warp(prev_pyramid[i], up_flow1, self.backward_grid[grid_key], tflite_export=self.export2tflite)
+                n = nutils.backward_warp(nxt_pyramid[i], up_flow2, self.backward_grid[grid_key], tflite_export=self.export2tflite)
             input = torch.cat([p, cur_pyramid[i], n], 1)
             if self.share:
                 flow1, flow2 = self.moduleBasic(input)
